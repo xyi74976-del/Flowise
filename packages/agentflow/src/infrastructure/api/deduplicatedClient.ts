@@ -58,6 +58,7 @@ export function withDeduplication(
     const inFlight = new Map<string, Promise<AxiosResponse>>()
     // No size limit needed: ~15 distinct metadata endpoints with 30s TTL keeps this trivially small
     const cache = new Map<string, CacheEntry>()
+    let cacheGeneration = 0
 
     function getCached(key: string): AxiosResponse | undefined {
         const entry = cache.get(key)
@@ -78,13 +79,18 @@ export function withDeduplication(
         const existing = inFlight.get(key)
         if (existing) return existing as Promise<R>
 
+        const requestGeneration = cacheGeneration
         const promise = client
             .get<T, R, D>(url, config)
             .then((response) => {
-                cache.set(key, { response: response as AxiosResponse, expiresAt: Date.now() + getCacheTtlMs })
+                if (requestGeneration === cacheGeneration) {
+                    cache.set(key, { response: response as AxiosResponse, expiresAt: Date.now() + getCacheTtlMs })
+                }
                 return response
             })
-            .finally(() => inFlight.delete(key))
+            .finally(() => {
+                if (inFlight.get(key) === promise) inFlight.delete(key)
+            })
 
         inFlight.set(key, promise as Promise<AxiosResponse>)
         return promise
@@ -107,13 +113,18 @@ export function withDeduplication(
         const existing = inFlight.get(key)
         if (existing) return existing as Promise<R>
 
+        const requestGeneration = cacheGeneration
         const promise = client
             .post<T, R, D>(url, data, config)
             .then((response) => {
-                cache.set(key, { response: response as AxiosResponse, expiresAt: Date.now() + loadMethodCacheTtlMs })
+                if (requestGeneration === cacheGeneration) {
+                    cache.set(key, { response: response as AxiosResponse, expiresAt: Date.now() + loadMethodCacheTtlMs })
+                }
                 return response
             })
-            .finally(() => inFlight.delete(key))
+            .finally(() => {
+                if (inFlight.get(key) === promise) inFlight.delete(key)
+            })
 
         inFlight.set(key, promise as Promise<AxiosResponse>)
         return promise
@@ -125,7 +136,9 @@ export function withDeduplication(
         get: deduplicatedGet,
         post: deduplicatedPost,
         clearCache() {
+            cacheGeneration++
             cache.clear()
+            inFlight.clear()
         }
     }) as DeduplicatedClient
 }

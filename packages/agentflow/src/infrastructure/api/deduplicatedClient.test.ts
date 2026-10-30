@@ -202,6 +202,40 @@ describe('withDeduplication', () => {
     })
 
     describe('clearCache', () => {
+        describe.each(['get', 'post'] as const)('%s requests already in flight', (method) => {
+            it.each(['old-first', 'new-first'])('keeps fresh responses when requests settle %s', async (order) => {
+                const oldResponse = deferred<AxiosResponse>()
+                const newResponse = deferred<AxiosResponse>()
+                const transport = mockClient[method] as jest.Mock
+                transport.mockReturnValueOnce(oldResponse.promise).mockReturnValueOnce(newResponse.promise)
+                const read = () =>
+                    method === 'get'
+                        ? client.get('/credentials')
+                        : client.post('/node-load-method/agentAgentflow', { loadMethod: 'listModels' })
+
+                const oldRead = read()
+                client.clearCache()
+                const freshRead = read()
+
+                if (order === 'old-first') {
+                    oldResponse.resolve(fakeResponse('old'))
+                    expect((await oldRead).data).toBe('old')
+                    const concurrentFreshRead = read()
+                    newResponse.resolve(fakeResponse('new'))
+                    expect((await concurrentFreshRead).data).toBe('new')
+                } else {
+                    newResponse.resolve(fakeResponse('new'))
+                    await newResponse.promise
+                    oldResponse.resolve(fakeResponse('old'))
+                    expect((await oldRead).data).toBe('old')
+                }
+
+                expect((await freshRead).data).toBe('new')
+                expect((await read()).data).toBe('new')
+                expect(transport).toHaveBeenCalledTimes(2)
+            })
+        })
+
         it('should force re-fetch after clearCache is called', async () => {
             ;(mockClient.get as jest.Mock).mockResolvedValue(fakeResponse('first'))
             await client.get('/nodes')

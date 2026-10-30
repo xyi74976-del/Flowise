@@ -1,5 +1,5 @@
 import { bindCredentialsApi } from './credentials'
-import type { DeduplicatedClient } from './deduplicatedClient'
+import { type DeduplicatedClient, withDeduplication } from './deduplicatedClient'
 
 const mockClient = {
     get: jest.fn(),
@@ -60,6 +60,32 @@ describe('bindCredentialsApi', () => {
         const result = await api.createCredential(body)
         expect(mockClient.post).toHaveBeenCalledWith('/credentials', body)
         expect(result).toEqual(mockCreated)
+    })
+
+    it('refreshes the list after creating a credential while an older list is pending', async () => {
+        let resolveStale!: (response: { data: unknown[] }) => void
+        const staleResponse = new Promise<{ data: unknown[] }>((resolve) => {
+            resolveStale = resolve
+        })
+        const body = { name: 'New credential', credentialName: 'openAIApi', plainDataObj: {} }
+        const created = { id: 'new', ...body }
+        const transport = {
+            get: jest
+                .fn()
+                .mockReturnValueOnce(staleResponse)
+                .mockResolvedValue({ data: [created] }),
+            post: jest.fn().mockResolvedValue({ data: created })
+        } as unknown as DeduplicatedClient
+        const credentials = bindCredentialsApi(withDeduplication(transport))
+
+        const oldList = credentials.getAllCredentials()
+        await credentials.createCredential(body)
+        const newList = credentials.getAllCredentials()
+        resolveStale({ data: [] })
+
+        expect(await oldList).toEqual([])
+        expect(await newList).toEqual([created])
+        expect(await credentials.getAllCredentials()).toEqual([created])
     })
 
     it('getCredentialById calls GET /credentials/:id', async () => {
